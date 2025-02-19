@@ -3,7 +3,7 @@ import { ModelProviderName, Clients } from "@elizaos/core";
 export const mainCharacter = {
     name: "Nova",
     clients: [],
-    modelProvider: ModelProviderName.OPENAI,
+    modelProvider: ModelProviderName.OLLAMA,
     plugins: [],
     settings: {},
     system: "Your gateway to Web3, guiding you through wallet creation, asset management, and investment strategies across multiple blockchain networks.",
