@@ -1,6 +1,6 @@
 import { GOOGLE_CLIENT_ID } from "./core/constants";
 import useEphemeralKeyPair from "./core/useEphemeralKeyPair";
-import { useKeylessAccounts } from "./core/useKeylessAccounts";
+import { keylessAccountsManager } from "./core/useKeylessAccounts";
 
 export const createAptosWalletService = () => {
  
@@ -21,7 +21,7 @@ export const createAptosWalletService = () => {
      *
      * window.location.origin == http://localhost:5173
      */
-    redirect_uri: `${window.location.origin}/callback`,
+    redirect_uri: `http://localhost:5173/callback`,
     /**
      * This uses the OpenID Connect implicit flow to return an id_token. This is recommended
      * for SPAs as it does not require a backend server.
@@ -36,7 +36,7 @@ export const createAptosWalletService = () => {
   };
    const handleLoginCallback = async (idToken: string) => {
     try {
-   const keylessAccount = await useKeylessAccounts((state) => state.switchKeylessAccount)(idToken);
+   const keylessAccount = await keylessAccountsManager.switchKeylessAccount(idToken);
       // Assuming there's a function to navigate within Eliza
       console.log("keylessAccount", keylessAccount);
       return keylessAccount;

@@ -13,17 +13,15 @@ import { createAptosWalletService } from "../services";
 
 
 
-export const createAptosWalletAction: Action = {
-    name: "CREATE_APTOS_WALLET",
+export const loginAptosWalletAction: Action = {
+    name: "APROS_LOGIN",
     similes: [
-        "CREATE_APTOS_WALLET",
         "LOGIN_APTOS_WALLET",
-        "CREATE_APTOS_WALLET_ACCOUNT",
-        "CREATE_APTOS_WALLET_ACCOUNT_VIA_GOOGLE",
+    
 
       
     ],
-    description: "Create a new Aptos wallet.",
+    description: "Login to Aptos wallet.",
     validate: async (runtime: IAgentRuntime) => {
         await validateAptosConfig(runtime);
         return true;
@@ -53,20 +51,11 @@ export const createAptosWalletAction: Action = {
                 const aptosService = createAptosWalletService();
 
         try {
-            // const aptosWallet = await aptosService.ConnectToGoogleService();
-            elizaLogger.success(
-                `Successfully created Aptos wallet`
-            );
-            if (callback) {
-                callback({
-                    text: `singin to aptos wallet via google, visit this url to login: ${aptosService.ConnectToGoogleService()}`,
-                  
-                    // action: "LOGIN_APTOS_WALLET",
-                });
-                return true;
-            }
+            const idToken = message.content.idToken;
+            const aptosWallet = await aptosService.handleLoginCallback(idToken as any);
+            return aptosWallet;
         } catch (error:any) {
-            elizaLogger.error("Error in Aptos plugin handler:", error);
+            elizaLogger.error("Error in Aptos plugin login handler:", error);
             callback({
                 text: `Error creating Aptos wallet: ${error.message}`,
                 content: { error: error.message },
@@ -74,7 +63,7 @@ export const createAptosWalletAction: Action = {
             return false;
         }
     },
-    examples: getAptosDeploymentExamples as ActionExample[][],
+    examples: [],
 } as Action;
 
 
