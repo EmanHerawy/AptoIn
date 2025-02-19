@@ -6,8 +6,6 @@ import {
   KeylessAccount,
   ProofFetchStatus,
 } from "@aptos-labs/ts-sdk";
-import { create } from "zustand";
-import { persist, createJSONStorage } from "zustand/middleware";
 import { LocalStorageKeys, devnetClient } from "./constants";
 import { validateIdToken } from "./idToken";
 import {
@@ -18,191 +16,131 @@ import {
 import { EncryptedScopedIdToken } from "./types";
 import { KeylessAccountEncoding, validateKeylessAccount } from "./keyless";
 
-interface KeylessAccountsState {
-  accounts: {
-    idToken: { decoded: EncryptedScopedIdToken; raw: string };
-    pepper: Uint8Array;
-  }[];
-  activeAccount?: KeylessAccount;
-  ephemeralKeyPair?: EphemeralKeyPair;
+interface AccountData {
+  idToken: { decoded: EncryptedScopedIdToken; raw: string };
+  pepper: Uint8Array;
 }
 
-interface KeylessAccountsActions {
-  /**
-   * Add an Ephemeral key pair to the store. If the account is invalid, an error is thrown.
-   *
-   * @param account - The Ephemeral key pair to add to the store.
-   */
-  commitEphemeralKeyPair: (account: EphemeralKeyPair) => void;
-  /**
-   * Disconnects the active account from the store.
-   */
-  disconnectKeylessAccount: () => void;
-  /**
-   * Retrieve the Ephemeral key pair from the store.
-   *
-   * @returns The Ephemeral key pair if found, otherwise undefined.
-   */
-  getEphemeralKeyPair: () => EphemeralKeyPair | undefined;
-  /**
-   * Switches the active account to the one associated with the provided idToken. If no account is found,
-   * undefined is returned. The following conditions must be met for the switch to be successful:
-   *
-   * 1. The idToken must be valid and contain a nonce.
-   * 2. An Ephemeral key pair with the same nonce must exist in the store.
-   * 3. The idToken and Ephemeral key pair must both be valid.
-   *
-   * @param idToken - The idToken of the account to switch to.
-   * @returns The active account if the switch was successful, otherwise undefined.
-   */
-  switchKeylessAccount: (
-    idToken: string
-  ) => Promise<KeylessAccount | undefined>;
-}
+class KeylessAccountsManager {
+  private accounts: AccountData[] = [];
+  private activeAccount?: KeylessAccount;
+  private ephemeralKeyPair?: EphemeralKeyPair;
+  private storage = new Map<string, string>(); // In-memory storage
 
-const storage = createJSONStorage<KeylessAccountsState>(() => localStorage, {
-  replacer: (_, e) => {
-    if (typeof e === "bigint") return { __type: "bigint", value: e.toString() };
-    if (e instanceof Uint8Array)
-      return { __type: "Uint8Array", value: Array.from(e) };
-    if (e instanceof EphemeralKeyPair)
-      return EphemeralKeyPairEncoding.encode(e);
-    if (e instanceof KeylessAccount) return KeylessAccountEncoding.encode(e);
-    return e;
-  },
-  reviver: (_, e: any) => {
-    if (e && e.__type === "bigint") return BigInt(e.value);
-    if (e && e.__type === "Uint8Array") return new Uint8Array(e.value);
-    if (e && e.__type === "EphemeralKeyPair")
-      return EphemeralKeyPairEncoding.decode(e);
-    if (e && e.__type === "KeylessAccount")
-      return KeylessAccountEncoding.decode(e);
-    return e;
-  },
-});
+  private saveToStorage() {
+    const data = JSON.stringify({
+      accounts: this.accounts,
+      activeAccount: this.activeAccount
+        ? KeylessAccountEncoding.encode(this.activeAccount)
+        : undefined,
+      ephemeralKeyPair: this.ephemeralKeyPair
+        ? EphemeralKeyPairEncoding.encode(this.ephemeralKeyPair)
+        : undefined,
+    });
+    console.log("Saving to storage:", data);
+    this.storage.set("keylessAccounts", data);
+  }
 
-export const useKeylessAccounts = create<
-  KeylessAccountsState & KeylessAccountsActions
->()(
-  persist(
-    (set, get, store) => ({
-      ...({ accounts: [] } satisfies KeylessAccountsState),
-      ...({
-        commitEphemeralKeyPair: (keyPair) => {
-          const valid = isValidEphemeralKeyPair(keyPair);
-          if (!valid)
-            throw new Error(
-              "addEphemeralKeyPair: Invalid ephemeral key pair provided"
-            );
-          set({ ephemeralKeyPair: keyPair });
-        },
-
-        disconnectKeylessAccount: () => set({ activeAccount: undefined }),
-
-        getEphemeralKeyPair: () => {
-          const account = get().ephemeralKeyPair;
-          return account ? validateEphemeralKeyPair(account) : undefined;
-        },
-
-        switchKeylessAccount: async (idToken: string) => {
-          set({ ...get(), activeAccount: undefined }, true);
-
-          // If the idToken is invalid, return undefined
-          const decodedToken = validateIdToken(idToken);
-          if (!decodedToken) {
-            throw new Error(
-              "switchKeylessAccount: Invalid idToken provided, could not decode"
-            );
-          }
-
-          // If a corresponding Ephemeral key pair is not found, return undefined
-          const ephemeralKeyPair = get().getEphemeralKeyPair();
-          if (
-            !ephemeralKeyPair ||
-            ephemeralKeyPair?.nonce !== decodedToken.nonce
-          ) {
-            throw new Error(
-              "switchKeylessAccount: Ephemeral key pair not found"
-            );
-          }
-
-          // Create a handler to allow the proof to be computed asynchronously.
-          const proofFetchCallback = async (res: ProofFetchStatus) => {
-            if (res.status === "Failed") {
-              get().disconnectKeylessAccount();
-            } else {
-              store.persist.rehydrate();
-            }
-          };
-
-          // Derive and store the active account
-          const storedAccount = get().accounts.find(
-            (a) => a.idToken.decoded.sub === decodedToken.sub
-          );
-          let activeAccount: KeylessAccount | undefined;
-          try {
-            activeAccount = await devnetClient.deriveKeylessAccount({
-              ephemeralKeyPair,
-              jwt: idToken,
-              proofFetchCallback,
-            });
-          } catch (error) {
-            // If we cannot derive an account using the pepper service, attempt to derive it using the stored pepper
-            if (!storedAccount?.pepper) throw error;
-            activeAccount = await devnetClient.deriveKeylessAccount({
-              ephemeralKeyPair,
-              jwt: idToken,
-              pepper: storedAccount.pepper,
-              proofFetchCallback,
-            });
-          }
-
-          // Store the account and set it as the active account
-          const { pepper } = activeAccount;
-          set({
-            accounts: storedAccount
-              ? // If the account already exists, update it. Otherwise, append it.
-              get().accounts.map((a) =>
-                a.idToken.decoded.sub === decodedToken.sub
-                  ? {
-                    idToken: { decoded: decodedToken, raw: idToken },
-                    pepper,
-                  }
-                  : a
-              )
-              : [
-                ...get().accounts,
-                { idToken: { decoded: decodedToken, raw: idToken }, pepper },
-              ],
-            activeAccount,
-          });
-
-          return activeAccount;
-        },
-      } satisfies KeylessAccountsActions),
-    }),
-    {
-      merge: (persistedState, currentState) => {
-        const merged = { ...currentState, ...(persistedState as object) };
-        return {
-          ...merged,
-          activeAccount:
-            merged.activeAccount &&
-            validateKeylessAccount(merged.activeAccount),
-          ephemeralKeyPair:
-            merged.ephemeralKeyPair &&
-            validateEphemeralKeyPair(merged.ephemeralKeyPair),
-        };
-      },
-      name: LocalStorageKeys.keylessAccounts,
-      partialize: ({ activeAccount, ephemeralKeyPair, ...state }) => ({
-        ...state,
-        activeAccount: activeAccount && validateKeylessAccount(activeAccount),
-        ephemeralKeyPair:
-          ephemeralKeyPair && validateEphemeralKeyPair(ephemeralKeyPair),
-      }),
-      storage,
-      version: 1,
+  private loadFromStorage() {
+    const data = this.storage.get("keylessAccounts");
+    if (data) {
+      console.log("Loading from storage:", data);
+      const parsed = JSON.parse(data);
+      this.accounts = parsed.accounts || [];
+      this.activeAccount = parsed.activeAccount
+        ? validateKeylessAccount(KeylessAccountEncoding.decode(parsed.activeAccount))
+        : undefined;
+      this.ephemeralKeyPair = parsed.ephemeralKeyPair
+        ? validateEphemeralKeyPair(EphemeralKeyPairEncoding.decode(parsed.ephemeralKeyPair))
+        : undefined;
+      console.log("Loaded ephemeral key pair:", this.ephemeralKeyPair);
     }
-  )
-);
+  }
+
+  commitEphemeralKeyPair(account: EphemeralKeyPair) {
+    if (!isValidEphemeralKeyPair(account)) {
+      throw new Error("Invalid ephemeral key pair provided");
+    }
+    console.log("Setting ephemeral key pair:", account);
+    this.ephemeralKeyPair = account;
+    this.saveToStorage();
+  }
+
+  disconnectKeylessAccount() {
+    console.log("Disconnecting keyless account");
+    this.activeAccount = undefined;
+    this.saveToStorage();
+  }
+
+  getEphemeralKeyPair(): EphemeralKeyPair | undefined {
+    console.log("Retrieving ephemeral key pair:", this.ephemeralKeyPair);
+    return this.ephemeralKeyPair ? validateEphemeralKeyPair(this.ephemeralKeyPair) : undefined;
+  }
+
+  async switchKeylessAccount(idToken: string): Promise<KeylessAccount | undefined> {
+    this.activeAccount = undefined;
+    this.saveToStorage();
+
+    const decodedToken = validateIdToken(idToken);
+    if (!decodedToken) {
+      throw new Error("Invalid idToken provided, could not decode");
+    }
+
+    console.log("Decoded ID Token:", decodedToken);
+
+    const ephemeralKeyPair = this.getEphemeralKeyPair();
+    if (!ephemeralKeyPair || ephemeralKeyPair.nonce !== decodedToken.nonce) {
+      throw new Error("Ephemeral key pair not found or mismatched");
+    }
+
+    console.log("Using ephemeral key pair:", ephemeralKeyPair);
+
+    const proofFetchCallback = async (res: ProofFetchStatus) => {
+      if (res.status === "Failed") {
+        console.warn("Proof fetch failed, disconnecting account");
+        this.disconnectKeylessAccount();
+      } else {
+        this.loadFromStorage();
+      }
+    };
+
+    const storedAccount = this.accounts.find(
+      (a) => a.idToken.decoded.sub === decodedToken.sub
+    );
+
+    let activeAccount: KeylessAccount | undefined;
+    try {
+      activeAccount = await devnetClient.deriveKeylessAccount({
+        ephemeralKeyPair,
+        jwt: idToken,
+        proofFetchCallback,
+      });
+    } catch (error) {
+      console.error("Error deriving keyless account:", error);
+      if (!storedAccount?.pepper) throw error;
+      activeAccount = await devnetClient.deriveKeylessAccount({
+        ephemeralKeyPair,
+        jwt: idToken,
+        pepper: storedAccount.pepper,
+        proofFetchCallback,
+      });
+    }
+
+    if (activeAccount) {
+      const { pepper } = activeAccount;
+      this.accounts = storedAccount
+        ? this.accounts.map((a) =>
+            a.idToken.decoded.sub === decodedToken.sub
+              ? { idToken: { decoded: decodedToken, raw: idToken }, pepper }
+              : a
+          )
+        : [...this.accounts, { idToken: { decoded: decodedToken, raw: idToken }, pepper }];
+      this.activeAccount = activeAccount;
+      this.saveToStorage();
+    }
+
+    return activeAccount;
+  }
+}
+
+export const keylessAccountsManager = new KeylessAccountsManager();
